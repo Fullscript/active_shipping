@@ -32,6 +32,12 @@ module ActiveShipping
   # @!attribute attempted_delivery_date
   #   @return [Date, Time]
   #
+  # @!attribute second_attempted_delivery_date
+  #   @return [Date, Time]
+  #
+  # @!attribute final_attempted_delivery_date
+  #   @return [Date, Time]
+  #
   # @!attribute delivery_signature
   #   @return [String]
   #
@@ -52,7 +58,8 @@ module ActiveShipping
   class TrackingResponse < Response
     attr_reader :carrier,:carrier_name,
                 :status,:status_code, :status_description,
-                :ship_time, :scheduled_delivery_date, :actual_delivery_date, :attempted_delivery_date,
+                :ship_time, :scheduled_delivery_date, :actual_delivery_date,
+                :attempted_delivery_date, :second_attempted_delivery_date, :final_attempted_delivery_date,
                 :delivery_signature, :tracking_number, :shipment_events,
                 :shipper_address, :origin, :destination
 
@@ -67,6 +74,8 @@ module ActiveShipping
       @scheduled_delivery_date = options[:scheduled_delivery_date]
       @actual_delivery_date = options[:actual_delivery_date]
       @attempted_delivery_date = options[:attempted_delivery_date]
+      @second_attempted_delivery_date = options[:second_attempted_delivery_date]
+      @final_attempted_delivery_date = options[:final_attempted_delivery_date]
       @delivery_signature = options[:delivery_signature]
       @tracking_number = options[:tracking_number]
       @shipment_events = Array(options[:shipment_events])
@@ -101,6 +110,8 @@ module ActiveShipping
     alias_method :scheduled_delivery_time, :scheduled_delivery_date
     alias_method :actual_delivery_time, :actual_delivery_date
     alias_method :attempted_delivery_time, :attempted_delivery_date
+    alias_method :second_attempted_delivery_time, :second_attempted_delivery_date
+    alias_method :final_attempted_delivery_time, :final_attempted_delivery_date
 
     def ==(other)
       attributes = %i(carrier carrier_name status status_code status_description ship_time scheduled_delivery_date

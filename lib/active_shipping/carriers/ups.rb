@@ -880,6 +880,11 @@ module ActiveShipping
 
           shipment_events = shipment_events.sort_by(&:time)
 
+          # UPS defines a failed delivery attempt with some narrative about the attempt
+          attempted_delivery_date = shipment_events.detect{ |shipment_event| shipment_event.name =~ /.*not available.*first delivery attempt/i }.try(:time)
+          second_attempted_delivery_date = shipment_events.detect{ |shipment_event| shipment_event.name =~ /.*not available.*second delivery attempt/i }.try(:time)
+          final_attempted_delivery_date = shipment_events.detect{ |shipment_event| shipment_event.name =~ /.*not available.*final delivery attempt/i }.try(:time)
+
           # UPS will sometimes archive a shipment, stripping all shipment activity except for the delivery
           # event (see test/fixtures/xml/delivered_shipment_without_events_tracking_response.xml for an example).
           # This adds an origin event to the shipment activity in such cases.
@@ -909,6 +914,7 @@ module ActiveShipping
         end
 
       end
+
       TrackingResponse.new(success, message, Hash.from_xml(response).values.first,
                            :carrier => @@name,
                            :xml => response,
@@ -919,6 +925,9 @@ module ActiveShipping
                            :delivery_signature => delivery_signature,
                            :scheduled_delivery_date => scheduled_delivery_date,
                            :actual_delivery_date => actual_delivery_date,
+                           :attempted_delivery_date => attempted_delivery_date,
+                           :second_attempted_delivery_date => second_attempted_delivery_date,
+                           :final_attempted_delivery_date => final_attempted_delivery_date,
                            :shipment_events => shipment_events,
                            :delivered => delivered,
                            :exception => exception,

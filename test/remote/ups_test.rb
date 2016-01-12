@@ -16,6 +16,16 @@ class RemoteUPSTest < Minitest::Test
     assert response.success?
   end
 
+  def test_tracking_with_multiple_attempts
+    # note that UPS reuses numbers which may invalidate this in the future
+    response = @carrier.find_tracking_info('1Z8558000358963420')
+    assert response.success?
+    assert_equal Time.parse('2015-12-21 12:28:00 UTC'), response.actual_delivery_date
+    assert_equal Time.parse('2015-12-15 18:37:00 UTC'), response.attempted_delivery_date
+    assert_equal Time.parse('2015-12-16 19:07:00 UTC'), response.second_attempted_delivery_date
+    assert_equal Time.parse('2015-12-17 17:38:00 UTC'), response.final_attempted_delivery_date    
+  end  
+
   def test_tracking_with_bad_number
     assert_raises ResponseError do
       @carrier.find_tracking_info('1Z12345E029198079')
