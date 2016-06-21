@@ -219,7 +219,7 @@ module ActiveShipping
 
             xml.LabelSpecification do
               xml.LabelFormatType('COMMON2D')
-              xml.ImageType('PNG')
+              xml.ImageType(options[:image_type] || 'PNG')
               xml.LabelStockType(options[:label_stock_type] || DEFAULT_LABEL_STOCK_TYPE)
             end
 

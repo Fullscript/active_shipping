@@ -627,6 +627,32 @@ class FedExTest < Minitest::Test
     assert_equal result.search('RequestedShipment/LabelSpecification/LabelStockType').text, label_stock_type
   end
 
+  def test_create_shipment_default_image_type
+    packages = package_fixtures.values_at(:wii)
+
+    result = Nokogiri::XML(@carrier.send(:build_shipment_request,
+                                         location_fixtures[:beverly_hills],
+                                         location_fixtures[:annapolis],
+                                         packages,
+                                         :test => true))
+
+    assert_equal result.search('RequestedShipment/LabelSpecification/ImageType').text, 'PNG'
+  end
+
+  def test_create_shipment_image_type
+    image_type = 'PDF'
+    packages = package_fixtures.values_at(:wii)
+
+    result = Nokogiri::XML(@carrier.send(:build_shipment_request,
+                                         location_fixtures[:beverly_hills],
+                                         location_fixtures[:annapolis],
+                                         packages,
+                                         :test => true,
+                                         :image_type => image_type))
+
+    assert_equal result.search('RequestedShipment/LabelSpecification/ImageType').text, image_type
+  end
+
   def test_maximum_address_field_length
     assert_equal 35, @carrier.maximum_address_field_length
   end
