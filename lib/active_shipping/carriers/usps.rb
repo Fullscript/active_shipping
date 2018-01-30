@@ -13,6 +13,7 @@ module ActiveShipping
     EventDetails = Struct.new(:description, :time, :zoneless_time, :location, :event_code)
     ONLY_PREFIX_EVENTS = ['DELIVERED','OUT FOR DELIVERY']
     self.retry_safe = true
+    self.ssl_version = :TLSv1_2
 
     cattr_reader :name
     @@name = "USPS"
@@ -113,11 +114,11 @@ module ActiveShipping
       :package_service => 'PACKAGESERVICE'
     }
 
+    ATTEMPTED_DELIVERY_CODES = %w(02 53 54 55 56 H0)
+
     # Array of U.S. possessions according to USPS: https://www.usps.com/ship/official-abbreviations.htm
     US_POSSESSIONS = %w(AS FM GU MH MP PW PR VI)
 
-    # TODO: figure out how USPS likes to say "Ivory Coast"
-    #
     # Country names:
     # http://pe.usps.gov/text/Imm/immctry.htm
     COUNTRY_NAME_CONVERSIONS = {
@@ -247,8 +248,8 @@ module ActiveShipping
         timestamp = "#{node.at('EventDate').text}, #{node.at('EventTime').text}"
         Time.parse(timestamp)
       else
-        # Arbitrary time in past, because we need to sort properly by time
-        Time.parse("Jan 01, 2000")
+        # Epoch time, because we need to sort properly by time
+        Time.at(0)
       end
 
       event_code = node.at('EventCode').text
@@ -421,7 +422,7 @@ module ActiveShipping
               xml.Length("%0.2f" % [package.inches(:length), 0.01].max)
               xml.Height("%0.2f" % [package.inches(:height), 0.01].max)
               xml.Girth("%0.2f" % [package.inches(:girth), 0.01].max)
-              xml.OriginZip(origin.zip)
+              xml.OriginZip(strip_zip(origin.zip))
               if commercial_type = commercial_type(options)
                 xml.public_send(COMMERCIAL_FLAG_NAME.fetch(commercial_type), 'Y')
               end
@@ -630,8 +631,7 @@ module ActiveShipping
 
         shipment_events = shipment_events.sort_by(&:time)
 
-        # USPS defines a delivery attempt with code 55
-        attempted_delivery_date = shipment_events.detect{ |shipment_event| shipment_event.type_code=="55" }.try(:time)
+        attempted_delivery_date = shipment_events.detect{ |shipment_event| ATTEMPTED_DELIVERY_CODES.include?(shipment_event.type_code) }.try(:time)
 
         if last_shipment = shipment_events.last
           status = last_shipment.status

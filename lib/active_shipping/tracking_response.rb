@@ -2,7 +2,7 @@ module ActiveShipping
 
   # Represents the response to a {ActiveShipping::Carrier#find_tracking_info} call.
   #
-  # @note Some carriers provide more information that others, so not all attributes
+  # @note Some carriers provide more information than others, so not all attributes
   #   will be set, depending on what carrier you are using.
   #
   # @!attribute carrier
@@ -37,7 +37,7 @@ module ActiveShipping
   #
   # @!attribute final_attempted_delivery_date
   #   @return [Date, Time]
-  #  
+  #
   # @!attribute delivery_signature
   #   @return [String]
   #
@@ -58,7 +58,7 @@ module ActiveShipping
   class TrackingResponse < Response
     attr_reader :carrier,:carrier_name,
                 :status,:status_code, :status_description,
-                :ship_time, :scheduled_delivery_date, :actual_delivery_date, 
+                :ship_time, :scheduled_delivery_date, :actual_delivery_date,
                 :attempted_delivery_date, :second_attempted_delivery_date, :final_attempted_delivery_date,
                 :delivery_signature, :tracking_number, :shipment_events,
                 :shipper_address, :origin, :destination
@@ -91,7 +91,7 @@ module ActiveShipping
       @shipment_events.last
     end
 
-    # Returns `true` if something the shipment has arrived at the destination.
+    # Returns `true` if the shipment has arrived at the destination.
     # @return [Boolean]
     def is_delivered?
       @status == :delivered
@@ -111,6 +111,6 @@ module ActiveShipping
     alias_method :actual_delivery_time, :actual_delivery_date
     alias_method :attempted_delivery_time, :attempted_delivery_date
     alias_method :second_attempted_delivery_time, :second_attempted_delivery_date
-    alias_method :final_attempted_delivery_time, :final_attempted_delivery_date    
+    alias_method :final_attempted_delivery_time, :final_attempted_delivery_date
   end
 end

@@ -1,4 +1,6 @@
 source "https://rubygems.org"
-gemspec
 
+gemspec path: '..'
+
+gem 'nokogiri', '>= 1.7'
 gem 'activesupport', '~> 4.2.0'

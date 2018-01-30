@@ -1,5 +1,7 @@
 module ActiveShipping
   class CanadaPostPWS < Carrier
+
+    cattr_reader :name
     @@name = "Canada Post PWS"
 
     SHIPPING_SERVICES = {
@@ -62,11 +64,21 @@ module ActiveShipping
       [:api_key, :secret]
     end
 
+    def self.default_location
+      {
+        :country     => 'CA',
+        :province    => 'ON',
+        :city        => 'Ottawa',
+        :address1    => '61A York St',
+        :postal_code => 'K1N5T2'
+      }
+    end
+
     def find_rates(origin, destination, line_items = [], options = {}, package = nil, services = [])
       url = endpoint + "rs/ship/price"
       request  = build_rates_request(origin, destination, line_items, options, package, services)
       response = ssl_post(url, request, headers(options, RATE_MIMETYPE, RATE_MIMETYPE))
-      parse_rates_response(response, origin, destination)
+      parse_rates_response(response, origin, destination, !!options[:exclude_tax])
     rescue ActiveUtils::ResponseError, ActiveShipping::ResponseError => e
       error_response(e.response.body, CPPWSRateResponse)
     end
@@ -261,7 +273,7 @@ module ActiveShipping
       builder.to_xml
     end
 
-    def parse_rates_response(response, origin, destination)
+    def parse_rates_response(response, origin, destination, exclude_tax)
       doc = Nokogiri.XML(response)
       doc.remove_namespaces!
       raise ActiveShipping::ResponseError, "No Quotes" unless doc.at('price-quotes')
@@ -269,7 +281,7 @@ module ActiveShipping
       rates = doc.root.xpath('price-quote').map do |node|
         service_name  = node.at("service-name").text
         service_code  = node.at("service-code").text
-        total_price   = node.at('price-details/due').text
+        total_price   = price_from_node(node, exclude_tax)
         expected_date = expected_date_from_node(node)
         options = {
           :service_code   => service_code,
@@ -280,6 +292,14 @@ module ActiveShipping
         RateEstimate.new(origin, destination, @@name, service_name, options)
       end
       CPPWSRateResponse.new(true, "", {}, :rates => rates)
+    end
+
+    def price_from_node(node, exclude_tax)
+      price = node.at('price-details/due').text
+      return price unless exclude_tax
+      children = node.at('price-details/taxes').children
+      tax_total_cents = children.sum { |node| node.elem? ? Package.cents_from(node.text) : 0 }
+      Package.cents_from(price) - tax_total_cents
     end
 
     # tracking
@@ -481,11 +501,12 @@ module ActiveShipping
       raise ActiveShipping::ResponseError, "No Shipping" unless doc.at('non-contract-shipment-info')
       options = {
         :shipping_id      => doc.root.at('shipment-id').text,
-        :tracking_number  => doc.root.at('tracking-pin').text,
         :details_url      => doc.root.at_xpath("links/link[@rel='details']")['href'],
         :label_url        => doc.root.at_xpath("links/link[@rel='label']")['href'],
         :receipt_url      => doc.root.at_xpath("links/link[@rel='receipt']")['href'],
       }
+      options[:tracking_number] = doc.root.at('tracking-pin').text if doc.root.at('tracking-pin')
+
       CPPWSShippingResponse.new(true, "", {}, options)
     end
 
@@ -566,13 +587,13 @@ module ActiveShipping
 
     def tracking_url(pin)
       case pin.length
-        when 12, 13, 16
-          endpoint + "vis/track/pin/%s/detail" % pin
-        when 15
-          endpoint + "vis/track/dnc/%s/detail" % pin
-        else
-          raise InvalidPinFormatError
-        end
+      when 12, 13, 16
+        "#{endpoint}vis/track/pin/#{pin}/detail"
+      when 15
+        "#{endpoint}vis/track/dnc/#{pin}/detail"
+      else
+        raise InvalidPinFormatError
+      end
     end
 
     def create_shipment_url(options)

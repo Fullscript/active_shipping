@@ -1,5 +1,36 @@
 # ActiveShipping CHANGELOG
 
+### v1.13.0
+- Add default location for CanadaPost PWS
+- Patch UPS to use old Kosovo country code
+- Add option to not include tax in rates for CP PWS
+
+### v1.12.1
+- Explicitly set ssl_version for USPS
+- Strip 9 digit origin zip code for USPS world rate requests
+
+### v1.12.0
+- Update active_utils dependency to v3.3.0
+
+### v1.8.6
+- Fix UPS TrackResponse with no status code
+- Stop FedEx from raising for successful responses with no statuses
+- Raise appropriate exception response for FedEx errors
+
+### v1.8.5
+- Fix UPS TrackResponse parsing for missing elements
+
+### v1.8.4
+- Add price details to rate estimates
+- Fix encoding for UPS responses
+
+### v1.8.3
+- Add description field to rate estimates
+
+### v1.8.2
+- Add option for FedEx label format
+- Fix kunaki remote tests broken due to more shipping options
+
 ### v1.6.1
 - Fix FedEx ShipmentEvents to include event type
 - Skip broken Canada Post remote tests

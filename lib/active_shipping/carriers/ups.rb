@@ -3,6 +3,7 @@
 module ActiveShipping
   class UPS < Carrier
     self.retry_safe = true
+    self.ssl_version = :TLSv1_2
 
     cattr_accessor :default_options
     cattr_reader :name
@@ -17,7 +18,8 @@ module ActiveShipping
       :ship_confirm => 'ups.app/xml/ShipConfirm',
       :ship_accept => 'ups.app/xml/ShipAccept',
       :delivery_dates =>  'ups.app/xml/TimeInTransit',
-      :void =>  'ups.app/xml/Void'
+      :void =>  'ups.app/xml/Void',
+      :validate_address => 'ups.app/xml/XAV'
     }
 
     PICKUP_CODES = HashWithIndifferentAccess.new(
@@ -127,6 +129,10 @@ module ActiveShipping
 
     IMPERIAL_COUNTRIES = %w(US LR MM)
 
+    COUNTRY_MAPPING = {
+      'XK' => 'KV'
+    }.freeze
+
     DEFAULT_SERVICE_NAME_TO_CODE = Hash[UPS::DEFAULT_SERVICES.to_a.map(&:reverse)]
     DEFAULT_SERVICE_NAME_TO_CODE['UPS 2nd Day Air'] = "02"
     DEFAULT_SERVICE_NAME_TO_CODE['UPS 3 Day Select'] = "12"
@@ -193,7 +199,7 @@ module ActiveShipping
       xml = parse_ship_confirm(confirm_response)
       success = response_success?(xml)
       message = response_message(xml)
-      raise message unless success
+      raise ActiveShipping::ResponseContentError, StandardError.new(message) unless success
       digest  = response_digest(xml)
 
       # STEP 2: Accept. Use shipment digest in first response to get the actual label.
@@ -231,6 +237,21 @@ module ActiveShipping
       35
     end
 
+    # Validates a location with the Street Level Validation service
+    #
+    # @param location [Location] The Location to validate
+    # @return [ActiveShipping::AddressValidationResponse] The response from the validation endpoint. This
+    #   response will determine if the given address is valid or not, its commercial/residential classification,
+    #   and the cleaned-up address and/or potential candidate addresses if the passed location can't be found
+    def validate_address(location, options = {})
+      location = upsified_location(location)
+      options = @options.merge(options)
+      access_request = build_access_request
+      address_validation_request = build_address_validation_request(location, options)
+      response = commit(:validate_address, save_request(access_request + address_validation_request), options[:test])
+      parse_address_validation_response(location, response, options)
+    end
+
     protected
 
     def upsified_location(location)
@@ -256,6 +277,25 @@ module ActiveShipping
       xml_builder.to_xml
     end
 
+    # Builds an XML node to request UPS shipping rates for the given packages
+    #
+    # @param origin [ActiveShipping::Location] Where the shipment will originate from
+    # @param destination [ActiveShipping::Location] Where the package will go
+    # @param packages [Array<ActiveShipping::Package>] The list of packages that will
+    #   be in the shipment
+    # @options options [Hash] rate-specific options
+    # @return [ActiveShipping::RateResponse] The response from the UPS, which
+    #   includes 0 or more rate estimates for different shipping products
+    #
+    # options:
+    # * service: name of the service
+    # * pickup_type: symbol for PICKUP_CODES
+    # * customer_classification: symbol for CUSTOMER_CLASSIFICATIONS
+    # * shipper: who is sending the package and where it should be returned
+    #     if it is undeliverable.
+    # * imperial: if truthy, measurements will use the metric system
+    # * negotiated_rates: if truthy, negotiated rates will be requested from
+    #     UPS. Only valid if shipper account has negotiated rates.
     def build_rate_request(origin, destination, packages, options = {})
       xml_builder = Nokogiri::XML::Builder.new do |xml|
         xml.RatingServiceSelectionRequest do
@@ -317,7 +357,7 @@ module ActiveShipping
     # Build XML node to request a shipping label for the given packages.
     #
     # options:
-    # * origin_account: who will pay for the shipping label
+    # * origin_account: account number for the shipper
     # * customer_context: a "guid like substance" -- according to UPS
     # * shipper: who is sending the package and where it should be returned
     #     if it is undeliverable.
@@ -331,6 +371,7 @@ module ActiveShipping
     # * prepay: if truthy the shipper will be bill immediatly. Otherwise the shipper is billed when the label is used.
     # * negotiated_rates: if truthy negotiated rates will be requested from ups. Only valid if shipper account has negotiated rates.
     # * delivery_confirmation: Can be set to any key from SHIPMENT_DELIVERY_CONFIRMATION_CODES. Can also be set on package level via package.options
+    # * bill_third_party: When truthy, bill an account other than the shipper's. Specified by billing_(account, zip and country)
     def build_shipment_request(origin, destination, packages, options={})
       packages = Array(packages)
       shipper = options[:shipper] || origin
@@ -380,7 +421,7 @@ module ActiveShipping
               end
             end
 
-            if options[:origin_account]
+            if options[:negotiated_rates]
               xml.RateInformation do
                 xml.NegotiatedRatesIndicator
               end
@@ -396,23 +437,7 @@ module ActiveShipping
             if options[:prepay]
               xml.PaymentInformation do
                 xml.Prepaid do
-                  xml.BillShipper do
-                    xml.AccountNumber(options[:origin_account])
-                  end
-                end
-              end
-            elsif options[:bill_third_party]
-              xml.PaymentInformation do
-                xml.BillThirdParty do
-                  xml.BillThirdPartyShipper do
-                    xml.AccountNumber(options[:billing_account])
-                    xml.ThirdParty do
-                      xml.Address do
-                        xml.PostalCode(options[:billing_zip])
-                        xml.CountryCode(options[:billing_country])
-                      end
-                    end
-                  end
+                  build_billing_info_node(xml, options)
                 end
               end
             else
@@ -421,18 +446,14 @@ module ActiveShipping
                   # Type '01' means 'Transportation'
                   # This node specifies who will be billed for transportation.
                   xml.Type('01')
-                  xml.BillShipper do
-                    xml.AccountNumber(options[:origin_account])
-                  end
+                  build_billing_info_node(xml, options)
                 end
-                if options[:terms_of_shipment] == 'DDP'
+                if options[:terms_of_shipment] == 'DDP' && options[:international]
                   # DDP stands for delivery duty paid and means the shipper will cover duties and taxes
                   # Otherwise UPS will charge the receiver
                   xml.ShipmentCharge do
                     xml.Type('02') # Type '02' means 'Duties and Taxes'
-                    xml.BillShipper do
-                      xml.AccountNumber(options[:origin_account])
-                    end
+                    build_billing_info_node(xml, options.merge(bill_to_consignee: true))
                   end
                 end
               end
@@ -532,10 +553,12 @@ module ActiveShipping
             xml.Weight([value.round(3), 0.1].max)
           end
 
-          xml.InvoiceLineTotal do
-            xml.CurrencyCode('USD')
-            total_value = packages.inject(0) {|sum, package| sum + package.value}
-            xml.MonetaryValue(total_value)
+          if packages.any? {|package| package.value.present?}
+            xml.InvoiceLineTotal do
+              xml.CurrencyCode('USD')
+              total_value = packages.inject(0) {|sum, package| sum + package.value.to_i}
+              xml.MonetaryValue(total_value)
+            end
           end
 
           xml.PickupDate(pickup_date.strftime('%Y%m%d'))
@@ -653,7 +676,7 @@ module ActiveShipping
           xml.StateProvinceCode(location.province) unless location.province.blank?
           # StateProvinceCode required for negotiated rates but not otherwise, for some reason
           xml.PostalCode(location.postal_code) unless location.postal_code.blank?
-          xml.CountryCode(location.country_code(:alpha2)) unless location.country_code(:alpha2).blank?
+          xml.CountryCode(mapped_country_code(location.country_code(:alpha2))) unless location.country_code(:alpha2).blank?
           xml.ResidentialAddressIndicator(true) unless location.commercial? # the default should be that UPS returns residential rates for destinations that it doesn't know about
           # not implemented: Shipment/(Shipper|ShipTo|ShipFrom)/Address/ResidentialAddressIndicator element
         end
@@ -665,7 +688,7 @@ module ActiveShipping
         xml.AddressArtifactFormat do
           xml.PoliticalDivision2(location.city)
           xml.PoliticalDivision1(location.province)
-          xml.CountryCode(location.country_code(:alpha2))
+          xml.CountryCode(mapped_country_code(location.country_code(:alpha2)))
           xml.PostcodePrimaryLow(location.postal_code)
           xml.ResidentialAddressIndicator(true) unless location.commercial?
         end
@@ -745,10 +768,38 @@ module ActiveShipping
               end
             end
           end
+
+          if package_value = package.options[:insured_value]
+            xml.InsuredValue do
+              xml.CurrencyCode(package.options[:currency] || 'USD')
+              xml.MonetaryValue(package_value.to_f)
+            end
+          end
         end
 
         # not implemented:  * Shipment/Package/LargePackageIndicator element
         #                   * Shipment/Package/AdditionalHandling element
+      end
+    end
+
+    def build_billing_info_node(xml, options={})
+      if options[:bill_third_party]
+        xml.BillThirdParty do
+          node_type = options[:bill_to_consignee] ? :BillThirdPartyConsignee : :BillThirdPartyShipper
+          xml.public_send(node_type) do
+            xml.AccountNumber(options[:billing_account])
+            xml.ThirdParty do
+              xml.Address do
+                xml.PostalCode(options[:billing_zip])
+                xml.CountryCode(mapped_country_code(options[:billing_country]))
+              end
+            end
+          end
+        end
+      else
+        xml.BillShipper do
+          xml.AccountNumber(options[:origin_account])
+        end
       end
     end
 
@@ -772,6 +823,7 @@ module ActiveShipping
           service_code = rated_shipment.at('Service/Code').text
           days_to_delivery = rated_shipment.at('GuaranteedDaysToDelivery').text.to_i
           days_to_delivery = nil if days_to_delivery == 0
+          warning_messages = rate_warning_messages(rated_shipment)
           RateEstimate.new(origin, destination, @@name, service_name_for(origin, service_code),
               :total_price => rated_shipment.at('TotalCharges/MonetaryValue').text.to_f,
               :insurance_price => rated_shipment.at('ServiceOptionsCharges/MonetaryValue').text.to_f,
@@ -779,7 +831,8 @@ module ActiveShipping
               :service_code => service_code,
               :packages => packages,
               :delivery_range => [timestamp_from_business_day(days_to_delivery)],
-              :negotiated_rate => rated_shipment.at('NegotiatedRates/NetSummaryCharges/GrandTotal/MonetaryValue').try(:text).to_f
+              :negotiated_rate => rated_shipment.at('NegotiatedRates/NetSummaryCharges/GrandTotal/MonetaryValue').try(:text).to_f,
+              :messages => warning_messages
           )
         end
       end
@@ -804,16 +857,18 @@ module ActiveShipping
         # Build status hash
         status_nodes = first_package.css('Activity > Status > StatusType')
 
-        # Prefer a delivery node
-        status_node = status_nodes.detect { |x| x.at('Code').text == 'D' }
-        status_node ||= status_nodes.first
+        if status_nodes.present?
+          # Prefer a delivery node
+          status_node = status_nodes.detect { |x| x.at('Code').text == 'D' }
+          status_node ||= status_nodes.first
 
-        status_code = status_node.at('Code').text
-        status_description = status_node.at('Description').text
-        status = TRACKING_STATUS_CODES[status_code]
+          status_code = status_node.at('Code').try(:text)
+          status_description = status_node.at('Description').try(:text)
+          status = TRACKING_STATUS_CODES[status_code]
 
-        if status_description =~ /out.*delivery/i
-          status = :out_for_delivery
+          if status_description =~ /out.*delivery/i
+            status = :out_for_delivery
+          end
         end
 
         origin, destination = %w(Shipper ShipTo).map do |location|
@@ -836,11 +891,11 @@ module ActiveShipping
         activities = first_package.css('> Activity')
         unless activities.empty?
           shipment_events = activities.map do |activity|
-            description = activity.at('Status/StatusType/Description').text
-            type_code = activity.at('Status/StatusType/Code').text
+            description = activity.at('Status/StatusType/Description').try(:text)
+            type_code = activity.at('Status/StatusType/Code').try(:text)
             zoneless_time = parse_ups_datetime(:time => activity.at('Time'), :date => activity.at('Date'))
             location = location_from_address_node(activity.at('ActivityLocation/Address'))
-            ShipmentEvent.new(description, zoneless_time, location, nil, type_code)
+            ShipmentEvent.new(description, zoneless_time, location, description, type_code)
           end
 
           shipment_events = shipment_events.sort_by(&:time)
@@ -937,10 +992,102 @@ module ActiveShipping
       end
     end
 
+    def build_address_validation_request(location, options = {})
+      xml_builder = Nokogiri::XML::Builder.new do |xml|
+        xml.AddressValidationRequest do
+          xml.Request do
+            xml.RequestAction('XAV')
+            xml.RequestOption('3')
+
+            if options[:customer_context]
+              xml.TransactionReference do
+                xml.CustomerContext(options[:customer_context])
+                xml.XpciVersion("1.0")
+              end
+            end
+          end
+
+          xml.AddressKeyFormat do
+            xml.AddressLine(location.address1)
+            if location.address2.present?
+              xml.AddressLine(location.address2)
+            end
+            xml.PoliticalDivision2(location.city)
+            xml.PoliticalDivision1(location.state)
+            xml.PostcodePrimaryLow(location.postal_code)
+            xml.CountryCode(mapped_country_code(location.country_code))
+          end
+        end
+      end
+
+      xml_builder.to_xml
+    end
+
+    def parse_address_validation_response(address, response, options={})
+      xml     = build_document(response, 'AddressValidationResponse')
+      success = response_success?(xml)
+      message = response_message(xml)
+
+      validity = nil
+      classification_code = nil
+      classification_description = nil
+      addresses = []
+
+      if success
+        if xml.at('AddressClassification/Code').present?
+          classification_code = xml.at('AddressClassification/Code').text
+        end
+
+        classification = case classification_code
+        when "1"
+          :commercial
+        when "2"
+          :residential
+        else
+          :unknown
+        end
+
+        validity = if xml.at("ValidAddressIndicator").present?
+          :valid
+        elsif xml.at("AmbiguousAddressIndicator").present?
+          :ambiguous
+        elsif xml.at("NoCandidatesIndicator").present?
+          :invalid
+        else
+          :unknown
+        end
+
+        addresses = xml.css('AddressKeyFormat').collect { |node| location_from_address_key_format_node(node) }
+      end
+
+      params = Hash.from_xml(response).values.first
+      response = AddressValidationResponse.new(success, message, params, :validity => validity, :classification => classification, :candidate_addresses => addresses, :xml => response, :request => last_request)
+    end
+
+    # Converts from a AddressKeyFormat XML node to a Location
+    def location_from_address_key_format_node(address)
+      return nil unless address
+      country = address.at('CountryCode').try(:text)
+      country = 'US' if country == 'ZZ' # Sometimes returned by SUREPOST in the US
+
+      address_lines = address.css('AddressLine')
+
+      Location.new(
+        :country     => country,
+        :postal_code => address.at('PostcodePrimaryLow').try(:text),
+        :province    => address.at('PoliticalDivision1').try(:text),
+        :city        => address.at('PoliticalDivision2').try(:text),
+        :address1    => address_lines[0].try(:text),
+        :address2    => address_lines[1].try(:text),
+        :address3    => address_lines[2].try(:text),
+      )
+    end
+
     def location_from_address_node(address)
       return nil unless address
       country = address.at('CountryCode').try(:text)
       country = 'US' if country == 'ZZ' # Sometimes returned by SUREPOST in the US
+      country = 'XK' if country == 'KV' # ActiveUtils now refers to Kosovo by XK
       Location.new(
         :country     => country,
         :postal_code => address.at('PostalCode').try(:text),
@@ -974,6 +1121,10 @@ module ActiveShipping
       [status, desc].select(&:present?).join(": ").presence || "UPS could not process the request."
     end
 
+    def rate_warning_messages(rate_xml)
+      rate_xml.xpath("RatedShipmentWarning").map { |warning| warning.text }
+    end
+
     def response_digest(xml)
       xml.root.at('ShipmentDigest').text
     end
@@ -998,7 +1149,8 @@ module ActiveShipping
     end
 
     def commit(action, request, test = false)
-      ssl_post("#{test ? TEST_URL : LIVE_URL}/#{RESOURCES[action]}", request)
+      response = ssl_post("#{test ? TEST_URL : LIVE_URL}/#{RESOURCES[action]}", request)
+      response.encode('utf-8', 'iso-8859-1')
     end
 
     def within_same_area?(origin, location)
@@ -1064,6 +1216,10 @@ module ActiveShipping
     def package_level_delivery_confirmation?(origin, destination)
       origin.country_code == destination.country_code ||
       [['US','PR'], ['PR','US']].include?([origin,destination].map(&:country_code))
+    end
+
+    def mapped_country_code(country_code)
+      COUNTRY_MAPPING[country_code].presence || country_code
     end
   end
 end
